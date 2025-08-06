@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<FilteredDataSet>
+    <FilteredData>
+        <University></University>
+        <Lecturer></Lecturer>
+        <Module></Module>
+        <Class_Room></Class_Room>
+        <Time></Time>
+        <Date></Date>
+        <Group></Group> <!-- Added new Group field -->
+    </FilteredData>
+</FilteredDataSet>
