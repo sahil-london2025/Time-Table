@@ -1,0 +1,331 @@
+name: Build Crystal Reports Installer
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Allows manual triggering
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      
+    - name: Setup .NET Framework
+      uses: microsoft/setup-msbuild@v2
+      
+    - name: Setup NuGet
+      uses: NuGet/setup-nuget@v2
+      
+    - name: Display Repository Contents
+      run: |
+        echo "Repository contents:"
+        dir /s
+        
+    - name: Restore NuGet Packages
+      run: |
+        if (Test-Path "WindowsFormsApp3/packages.config") {
+          nuget restore WindowsFormsApp3/WindowsFormsApp3.sln
+        } else {
+          echo "No packages.config found, skipping restore"
+        }
+      shell: pwsh
+      
+    - name: Build Application
+      run: |
+        msbuild WindowsFormsApp3/WindowsFormsApp3.sln /p:Configuration=Release /p:Platform="Any CPU" /p:OutputPath="../BuildOutput/"
+        
+    - name: Verify Build Output
+      run: |
+        echo "Build output contents:"
+        if (Test-Path "BuildOutput") {
+          dir BuildOutput
+        } else {
+          echo "BuildOutput folder not found, checking bin/Release"
+          dir WindowsFormsApp3/bin/Release -ErrorAction SilentlyContinue
+        }
+      shell: pwsh
+      
+    - name: Create Installer Staging Directory
+      run: |
+        mkdir installer-staging
+        mkdir installer-output
+        echo "Created staging directories"
+        
+    - name: Copy Application Files
+      run: |
+        # Copy from build output or bin/Release
+        if (Test-Path "BuildOutput/WindowsFormsApp3.exe") {
+          copy "BuildOutput/*" installer-staging/
+          echo "Copied from BuildOutput"
+        } elseif (Test-Path "WindowsFormsApp3/bin/Release/WindowsFormsApp3.exe") {
+          copy "WindowsFormsApp3/bin/Release/*" installer-staging/
+          echo "Copied from bin/Release"
+        } else {
+          echo "Error: Could not find built application"
+          exit 1
+        }
+        
+        # Copy report file
+        if (Test-Path "WindowsFormsApp3/CrystalReport1.rpt") {
+          copy "WindowsFormsApp3/CrystalReport1.rpt" installer-staging/
+          echo "Copied report file"
+        }
+        
+        # Copy XML files if they exist
+        if (Test-Path "*.xml") {
+          copy "*.xml" installer-staging/
+          echo "Copied XML files"
+        }
+        
+        # Copy dependencies
+        if (Test-Path "Dependencies") {
+          copy "Dependencies/*" installer-staging/
+          echo "Copied dependencies"
+        }
+        
+        echo "Files in installer-staging:"
+        dir installer-staging
+      shell: pwsh
+      
+    - name: Download Crystal Reports Runtime
+      run: |
+        echo "Preparing Crystal Reports Runtime..."
+        # Note: You'll need to provide the actual download URL or upload the MSI to your repo
+        # For now, we'll create a placeholder
+        echo "Crystal Reports Runtime MSI should be included in your repository" > installer-staging/CR_Runtime_Info.txt
+      shell: pwsh
+      
+    - name: Create Installation Scripts
+      run: |
+        # Create install.bat
+        @"
+        @echo off
+        echo ========================================
+        echo  Crystal Reports Application Installer
+        echo ========================================
+        echo.
+        echo This installer will:
+        echo 1. Install Crystal Reports Runtime
+        echo 2. Copy application files
+        echo 3. Create shortcuts
+        echo.
+        pause
+        
+        echo Installing Crystal Reports Runtime...
+        if exist "CRRuntime_64bit_13_0_4000.msi" (
+            echo Found Crystal Reports Runtime installer
+            CRRuntime_64bit_13_0_4000.msi /quiet
+            timeout /t 10 /nobreak
+        ) else (
+            echo WARNING: Crystal Reports Runtime not found!
+            echo Please install Crystal Reports Runtime manually
+            pause
+        )
+        
+        echo.
+        echo Creating application directory...
+        if not exist "C:\Program Files\TimeTableGenerator\" (
+            mkdir "C:\Program Files\TimeTableGenerator\"
+        )
+        
+        echo.
+        echo Copying application files...
+        copy "WindowsFormsApp3.exe" "C:\Program Files\TimeTableGenerator\" >nul
+        copy "WindowsFormsApp3.exe.config" "C:\Program Files\TimeTableGenerator\" >nul
+        copy "CrystalReport1.rpt" "C:\Program Files\TimeTableGenerator\" >nul
+        copy "*.xml" "C:\Program Files\TimeTableGenerator\" >nul 2>&1
+        copy "CrystalDecisions.*.dll" "C:\Program Files\TimeTableGenerator\" >nul
+        copy "*.dll" "C:\Program Files\TimeTableGenerator\" >nul
+        
+        echo.
+        echo Creating desktop shortcut...
+        powershell -Command "$$WshShell = New-Object -comObject WScript.Shell; $$Shortcut = $$WshShell.CreateShortcut('$$env:USERPROFILE\Desktop\TimeTable Generator.lnk'); $$Shortcut.TargetPath = 'C:\Program Files\TimeTableGenerator\WindowsFormsApp3.exe'; $$Shortcut.Save()"
+        
+        echo.
+        echo ========================================
+        echo  Installation Complete!
+        echo ========================================
+        echo.
+        echo The application has been installed to:
+        echo C:\Program Files\TimeTableGenerator\
+        echo.
+        echo A desktop shortcut has been created.
+        echo.
+        echo Press any key to exit...
+        pause >nul
+        "@ | Out-File -FilePath "installer-staging/install.bat" -Encoding ASCII
+        
+        # Create uninstall.bat
+        @"
+        @echo off
+        echo ========================================
+        echo  Crystal Reports Application Uninstaller
+        echo ========================================
+        echo.
+        echo This will remove the TimeTable Generator application.
+        echo.
+        set /p confirm=Are you sure you want to uninstall? (Y/N): 
+        if /i "%%confirm%%" NEQ "Y" goto :cancel
+        
+        echo.
+        echo Removing application files...
+        if exist "C:\Program Files\TimeTableGenerator\" (
+            rmdir /s /q "C:\Program Files\TimeTableGenerator\"
+            echo Application files removed.
+        ) else (
+            echo Application files not found.
+        )
+        
+        echo.
+        echo Removing desktop shortcut...
+        if exist "%%USERPROFILE%%\Desktop\TimeTable Generator.lnk" (
+            del "%%USERPROFILE%%\Desktop\TimeTable Generator.lnk"
+            echo Desktop shortcut removed.
+        )
+        
+        echo.
+        echo ========================================
+        echo  Uninstallation Complete!
+        echo ========================================
+        goto :end
+        
+        :cancel
+        echo Uninstallation cancelled.
+        
+        :end
+        echo.
+        pause
+        "@ | Out-File -FilePath "installer-staging/uninstall.bat" -Encoding ASCII
+        
+        echo "Installation scripts created"
+      shell: pwsh
+      
+    - name: Create README for Users
+      run: |
+        @"
+        ========================================
+        Crystal Reports TimeTable Generator
+        ========================================
+        
+        INSTALLATION INSTRUCTIONS:
+        
+        1. Extract all files to a folder
+        2. RIGHT-CLICK on 'install.bat' and select 'Run as Administrator'
+        3. Follow the installation prompts
+        4. The application will be installed to C:\Program Files\TimeTableGenerator\
+        5. A desktop shortcut will be created
+        
+        SYSTEM REQUIREMENTS:
+        
+        - Windows 10 or later (64-bit recommended)
+        - .NET Framework 4.7.2 or later
+        - Administrator privileges for installation
+        - At least 100MB free disk space
+        
+        UNINSTALLATION:
+        
+        - Run 'uninstall.bat' as Administrator, OR
+        - Manually delete C:\Program Files\TimeTableGenerator\ folder
+        
+        USAGE:
+        
+        1. Launch the application from desktop shortcut
+        2. Click 'Browse' to select Excel files
+        3. Click 'Generate Report' to create Crystal Report
+        4. Use 'Export to PDF' to save reports
+        5. Use < > buttons to navigate between multiple files
+        
+        TROUBLESHOOTING:
+        
+        If you get "Crystal Reports error":
+        1. Make sure you ran install.bat as Administrator
+        2. Verify Crystal Reports Runtime is installed
+        3. Check that CrystalReport1.rpt file exists in installation folder
+        
+        For support, create an issue at:
+        https://github.com/YOUR-USERNAME/YOUR-REPO-NAME/issues
+        
+        ========================================
+        Developed by: Rishabh Sikenis
+        ========================================
+        "@ | Out-File -FilePath "installer-staging/README.txt" -Encoding ASCII
+        
+        echo "README.txt created for users"
+      shell: pwsh
+      
+    - name: Create Self-Extracting Archive
+      run: |
+        # Download 7-Zip portable
+        Invoke-WebRequest -Uri "https://www.7-zip.org/a/7zr.exe" -OutFile "7zr.exe"
+        
+        # Create self-extracting archive
+        .\7zr.exe a -sfx "installer-output/TimeTableGenerator-Installer.exe" "installer-staging/*"
+        
+        echo "Self-extracting installer created"
+      shell: pwsh
+      
+    - name: Create Version Info
+      run: |
+        $version = Get-Date -Format "yyyy.MM.dd"
+        @"
+        TimeTable Generator - Crystal Reports Application
+        Version: $version
+        Build Date: $(Get-Date)
+        
+        Files included in this installer:
+        "@ | Out-File -FilePath "installer-output/Version-Info.txt"
+        
+        dir installer-staging | Out-File -FilePath "installer-output/Version-Info.txt" -Append
+      shell: pwsh
+      
+    - name: Upload Installer Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: TimeTableGenerator-Installer
+        path: |
+          installer-output/
+        retention-days: 30
+        
+    - name: Upload Staging Files (for debugging)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Installer-Staging-Files
+        path: |
+          installer-staging/
+        retention-days: 7
+        
+    - name: Create Release on Tag
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          installer-output/TimeTableGenerator-Installer.exe
+          installer-output/Version-Info.txt
+        name: TimeTable Generator ${{ github.ref_name }}
+        body: |
+          ## TimeTable Generator Release ${{ github.ref_name }}
+          
+          ### Installation Instructions:
+          1. Download `TimeTableGenerator-Installer.exe`
+          2. Right-click and "Run as Administrator"
+          3. Follow installation prompts
+          
+          ### Features:
+          - Excel to Crystal Reports conversion
+          - Multi-file processing
+          - PDF export with landscape orientation
+          - Professional report generation
+          
+          ### System Requirements:
+          - Windows 10 or later
+          - .NET Framework 4.7.2
+          - Administrator privileges
+          
+          **Note:** If you encounter Crystal Reports errors, make sure to install the Crystal Reports Runtime included in the installer.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
